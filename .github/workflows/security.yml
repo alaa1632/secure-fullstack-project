@@ -1,0 +1,107 @@
+name: Security Scanning Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+
+  trufflehog:
+    name: TruffleHog Secret Scan
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+  bandit:
+    name: Bandit Python Security Scan
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Security Virtual Environment
+        run: |
+          rm -rf /tmp/security-venv
+          python3 -m venv /tmp/security-venv
+          /tmp/security-venv/bin/python -m pip install --upgrade pip
+
+      - name: Install Bandit
+        run: |
+          /tmp/security-venv/bin/pip install bandit
+
+      - name: Run Bandit
+        run: |
+          /tmp/security-venv/bin/bandit -r ./backend -ll
+
+  hadolint:
+    name: Hadolint Dockerfile Scan
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Scan Backend Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:latest \
+            < backend/Dockerfile
+
+      - name: Scan Frontend Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:latest \
+            < frontend/Dockerfile
+
+  trivy:
+    name: Trivy Container Scan
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Backend Security Image
+        run: |
+          docker build \
+            -t secure-backend:security \
+            ./backend
+
+      - name: Build Frontend Security Image
+        run: |
+          docker build \
+            -t secure-frontend:security \
+            ./frontend
+
+      - name: Scan Backend Image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secure-backend:security
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Scan Frontend Image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secure-frontend:security
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
