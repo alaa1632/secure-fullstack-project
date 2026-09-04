@@ -19,15 +19,16 @@ jobs:
     steps:
 
       # ==========================================
-      # Checkout
+      # Checkout Repository
       # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       # ==========================================
-      # Create reports directory
+      # Create Security Reports Directory
       # ==========================================
       - name: Create security reports directory
         run: |
@@ -41,7 +42,7 @@ jobs:
         continue-on-error: true
         run: |
           docker run --rm \
-            -v "$GITHUB_WORKSPACE:/repo" \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
             trufflesecurity/trufflehog:latest \
             git file:///repo \
             --results=verified,unknown \
@@ -67,7 +68,7 @@ jobs:
             > security-reports/bandit.txt 2>&1
 
       # ==========================================
-      # 3. Hadolint - Dockerfile Scan
+      # 3. Hadolint - Backend Dockerfile
       # ==========================================
       - name: Hadolint Backend Dockerfile Scan
         continue-on-error: true
@@ -77,6 +78,9 @@ jobs:
             < ./backend/Dockerfile \
             > security-reports/hadolint-backend.txt 2>&1
 
+      # ==========================================
+      # 3. Hadolint - Frontend Dockerfile
+      # ==========================================
       - name: Hadolint Frontend Dockerfile Scan
         continue-on-error: true
         run: |
@@ -86,7 +90,7 @@ jobs:
             > security-reports/hadolint-frontend.txt 2>&1
 
       # ==========================================
-      # 4. Docker Build for Trivy
+      # 4. Build Backend Image for Trivy
       # ==========================================
       - name: Build Backend Image for Trivy
         continue-on-error: true
@@ -96,6 +100,9 @@ jobs:
             ./backend \
             > security-reports/backend-build.txt 2>&1
 
+      # ==========================================
+      # 4. Build Frontend Image for Trivy
+      # ==========================================
       - name: Build Frontend Image for Trivy
         continue-on-error: true
         run: |
@@ -105,7 +112,7 @@ jobs:
             > security-reports/frontend-build.txt 2>&1
 
       # ==========================================
-      # 5. Trivy - Container Security Scan
+      # 5. Trivy - Backend Container Scan
       # ==========================================
       - name: Trivy Backend Image Scan
         continue-on-error: true
@@ -116,6 +123,9 @@ jobs:
             secure-backend:security-scan \
             > security-reports/trivy-backend.txt 2>&1
 
+      # ==========================================
+      # 5. Trivy - Frontend Container Scan
+      # ==========================================
       - name: Trivy Frontend Image Scan
         continue-on-error: true
         run: |
