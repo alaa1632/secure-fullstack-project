@@ -1,0 +1,71 @@
+name: Secure Full-Stack CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+jobs:
+  security:
+    name: Security Scans
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Security Virtual Environment
+        run: |
+          python3 -m venv /tmp/security-venv
+          /tmp/security-venv/bin/python -m pip install --upgrade pip
+
+      - name: Install Security Tools
+        run: |
+          /tmp/security-venv/bin/pip install bandit pip-audit
+
+      - name: Bandit Python Security Scan
+        run: |
+          /tmp/security-venv/bin/bandit -r ./backend -ll
+
+      - name: pip-audit Dependency Scan
+        working-directory: ./backend
+        run: |
+          /tmp/security-venv/bin/pip-audit -r requirements.txt
+
+  build:
+    name: Build Docker Images
+    needs: security
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Backend Image
+        run: |
+          docker build \
+            -t secure-backend \
+            ./backend
+
+      - name: Build Frontend Image
+        run: |
+          docker build \
+            -t secure-frontend \
+            ./frontend
+
+      - name: Verify Docker Images
+        run: |
+          docker image inspect secure-backend
+          docker image inspect secure-frontend
