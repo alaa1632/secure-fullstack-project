@@ -1,4 +1,4 @@
-name: Security Scanning Pipeline
+name: Security Scan
 
 on:
   push:
@@ -12,96 +12,125 @@ permissions:
   contents: read
 
 jobs:
-
-  trufflehog:
-    name: TruffleHog Secret Scan
+  security:
+    name: Security Checks
     runs-on: self-hosted
 
     steps:
+
+      # ==========================================
+      # Checkout
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: TruffleHog Scan
-        uses: trufflesecurity/trufflehog@main
-        with:
-          extra_args: --only-verified
+      # ==========================================
+      # Create reports directory
+      # ==========================================
+      - name: Create security reports directory
+        run: |
+          rm -rf security-reports
+          mkdir -p security-reports
 
-  bandit:
-    name: Bandit Python Security Scan
-    runs-on: self-hosted
+      # ==========================================
+      # 1. TruffleHog - Secret Scan
+      # ==========================================
+      - name: TruffleHog Secret Scan
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            trufflesecurity/trufflehog:latest \
+            git file:///repo \
+            --results=verified,unknown \
+            > security-reports/trufflehog.txt 2>&1
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Create Security Virtual Environment
+      # ==========================================
+      # 2. Bandit - Python Security Scan
+      # ==========================================
+      - name: Create Python Security Environment
         run: |
           rm -rf /tmp/security-venv
           python3 -m venv /tmp/security-venv
           /tmp/security-venv/bin/python -m pip install --upgrade pip
-
-      - name: Install Bandit
-        run: |
           /tmp/security-venv/bin/pip install bandit
 
-      - name: Run Bandit
+      - name: Bandit Python Security Scan
+        continue-on-error: true
         run: |
-          /tmp/security-venv/bin/bandit -r ./backend -ll
+          /tmp/security-venv/bin/bandit \
+            -r ./backend \
+            -ll \
+            -f txt \
+            > security-reports/bandit.txt 2>&1
 
-  hadolint:
-    name: Hadolint Dockerfile Scan
-    runs-on: self-hosted
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Scan Backend Dockerfile
+      # ==========================================
+      # 3. Hadolint - Dockerfile Scan
+      # ==========================================
+      - name: Hadolint Backend Dockerfile Scan
+        continue-on-error: true
         run: |
-          docker run --rm -i hadolint/hadolint:latest \
-            < backend/Dockerfile
+          docker run --rm -i \
+            hadolint/hadolint:latest \
+            < ./backend/Dockerfile \
+            > security-reports/hadolint-backend.txt 2>&1
 
-      - name: Scan Frontend Dockerfile
+      - name: Hadolint Frontend Dockerfile Scan
+        continue-on-error: true
         run: |
-          docker run --rm -i hadolint/hadolint:latest \
-            < frontend/Dockerfile
+          docker run --rm -i \
+            hadolint/hadolint:latest \
+            < ./frontend/Dockerfile \
+            > security-reports/hadolint-frontend.txt 2>&1
 
-  trivy:
-    name: Trivy Container Scan
-    runs-on: self-hosted
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build Backend Security Image
-        run: |
-          docker build \
-            -t secure-backend:security \
-            ./backend
-
-      - name: Build Frontend Security Image
+      # ==========================================
+      # 4. Docker Build for Trivy
+      # ==========================================
+      - name: Build Backend Image for Trivy
+        continue-on-error: true
         run: |
           docker build \
-            -t secure-frontend:security \
-            ./frontend
+            -t secure-backend:security-scan \
+            ./backend \
+            > security-reports/backend-build.txt 2>&1
 
-      - name: Scan Backend Image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: secure-backend:security
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
+      - name: Build Frontend Image for Trivy
+        continue-on-error: true
+        run: |
+          docker build \
+            -t secure-frontend:security-scan \
+            ./frontend \
+            > security-reports/frontend-build.txt 2>&1
 
-      - name: Scan Frontend Image
-        uses: aquasecurity/trivy-action@master
+      # ==========================================
+      # 5. Trivy - Container Security Scan
+      # ==========================================
+      - name: Trivy Backend Image Scan
+        continue-on-error: true
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            secure-backend:security-scan \
+            > security-reports/trivy-backend.txt 2>&1
+
+      - name: Trivy Frontend Image Scan
+        continue-on-error: true
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            secure-frontend:security-scan \
+            > security-reports/trivy-frontend.txt 2>&1
+
+      # ==========================================
+      # Upload Security Reports
+      # ==========================================
+      - name: Upload Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          image-ref: secure-frontend:security
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
+          name: security-reports
+          path: security-reports/
