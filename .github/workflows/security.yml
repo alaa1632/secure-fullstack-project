@@ -40,13 +40,21 @@ jobs:
       # ==========================================
       - name: TruffleHog Secret Scan
         continue-on-error: true
+        timeout-minutes: 10
         run: |
+          echo "Starting TruffleHog scan..."
+
+          docker pull trufflesecurity/trufflehog:latest
+
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             trufflesecurity/trufflehog:latest \
             git file:///repo \
             --results=verified,unknown \
+            --no-update \
             > security-reports/trufflehog.txt 2>&1
+
+          echo "TruffleHog scan finished."
 
       # ==========================================
       # 2. Bandit - Python Security Scan
