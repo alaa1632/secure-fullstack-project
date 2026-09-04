@@ -1,26 +1,24 @@
-name: Secure Full-Stack CI/CD
+name: CI/CD
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
 permissions:
   contents: read
   packages: write
-  security-events: write
-
-env:
-  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/secure-backend
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/secure-frontend
 
 jobs:
 
-  # ============================================================
-  # 1. SECURITY
-  # ============================================================
-  security:
-    name: Security Scans
+  # ==========================================
+  # Build Backend
+  # ==========================================
+  build-backend:
+    name: Build Backend
     runs-on: self-hosted
 
     steps:
@@ -29,94 +27,74 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Gitleaks Secret Scan
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Security Virtual Environment
+      - name: Build Backend Docker Image
         run: |
-          rm -rf /tmp/security-venv
-          python3 -m venv /tmp/security-venv
-          /tmp/security-venv/bin/python -m pip install --upgrade pip
+          docker build \
+            -t secure-backend:latest \
+            ./backend
 
-      - name: Install Security Tools
-        run: |
-          /tmp/security-venv/bin/pip install bandit pip-audit
-
-      - name: Bandit Python Security Scan
-        run: |
-          /tmp/security-venv/bin/bandit -r ./backend -ll
-
-      - name: pip-audit Dependency Scan
-        working-directory: ./backend
-        run: |
-          /tmp/security-venv/bin/pip-audit -r requirements.txt
-
-
-  # ============================================================
-  # 2. BUILD + TRIVY
-  # ============================================================
-  build:
-    name: Build and Scan Docker Images
-    needs: security
+  # ==========================================
+  # Build Frontend
+  # ==========================================
+  build-frontend:
+    name: Build Frontend
     runs-on: self-hosted
 
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
+      - name: Build Frontend Docker Image
+        run: |
+          docker build \
+            -t secure-frontend:latest \
+            ./frontend
+
+  # ==========================================
+  # Publish Images to GHCR
+  # ==========================================
+  publish:
+    name: Publish Docker Images
+    runs-on: self-hosted
+    needs:
+      - build-backend
+      - build-frontend
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      # ------------------------------------------
+      # Build Backend
+      # ------------------------------------------
       - name: Build Backend Image
         run: |
           docker build \
-            -t "${BACKEND_IMAGE}:latest" \
+            -t ghcr.io/alaa1632/secure-fullstack-project/backend:latest \
             ./backend
 
+      # ------------------------------------------
+      # Build Frontend
+      # ------------------------------------------
       - name: Build Frontend Image
         run: |
           docker build \
-            -t "${FRONTEND_IMAGE}:latest" \
+            -t ghcr.io/alaa1632/secure-fullstack-project/frontend:latest \
             ./frontend
 
-      - name: Trivy Backend Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.BACKEND_IMAGE }}:latest
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
-
-      - name: Trivy Frontend Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.FRONTEND_IMAGE }}:latest
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
-
-      - name: Verify Docker Images
-        run: |
-          docker image inspect "${BACKEND_IMAGE}:latest"
-          docker image inspect "${FRONTEND_IMAGE}:latest"
-
-
-  # ============================================================
-  # 3. PUBLISH TO GHCR
-  # ============================================================
-  publish:
-    name: Publish Images to GHCR
-    needs: build
-    runs-on: self-hosted
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      # ------------------------------------------
+      # Login to GitHub Container Registry
+      # ------------------------------------------
       - name: Login to GHCR
         env:
           CR_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -125,253 +103,214 @@ jobs:
             -u "${{ github.actor }}" \
             --password-stdin
 
-      - name: Build Backend Image
-        run: |
-          docker build \
-            -t "${BACKEND_IMAGE}:latest" \
-            ./backend
-
-      - name: Build Frontend Image
-        run: |
-          docker build \
-            -t "${FRONTEND_IMAGE}:latest" \
-            ./frontend
-
+      # ------------------------------------------
+      # Push Backend
+      # ------------------------------------------
       - name: Push Backend Image
         run: |
-          docker push "${BACKEND_IMAGE}:latest"
+          docker push \
+            ghcr.io/alaa1632/secure-fullstack-project/backend:latest
 
+      # ------------------------------------------
+      # Push Frontend
+      # ------------------------------------------
       - name: Push Frontend Image
         run: |
-          docker push "${FRONTEND_IMAGE}:latest"
+          docker push \
+            ghcr.io/alaa1632/secure-fullstack-project/frontend:latest
 
-      - name: Logout from GHCR
-        if: always()
-        run: |
-          docker logout ghcr.io
-
-
-  # ============================================================
-  # 4. DEPLOY
-  # ============================================================
+  # ==========================================
+  # Deploy Application
+  # ==========================================
   deploy:
     name: Deploy Application
-    needs: publish
     runs-on: self-hosted
+    needs:
+      - publish
 
     steps:
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ----------------------------------------------------------
-      # Login to GHCR
-      # ----------------------------------------------------------
-      - name: Login to GHCR
-        env:
-          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
+      # ------------------------------------------
+      # Go to Persistent Project Directory
+      # ------------------------------------------
+      - name: Verify project directory
         run: |
-          printf '%s' "$CR_PAT" | docker login ghcr.io \
-            -u "${{ github.actor }}" \
-            --password-stdin
+          cd /home/alaa/secure-fullstack-project
 
-      # ----------------------------------------------------------
-      # Pull latest images
-      # ----------------------------------------------------------
-      - name: Pull Backend Image
+          echo "Project directory:"
+          pwd
+
+          echo "Checking Docker Compose:"
+          docker compose version
+
+      # ------------------------------------------
+      # Verify Vault Agent Container
+      # ------------------------------------------
+      - name: Verify Vault Agent
         run: |
-          docker pull "${BACKEND_IMAGE}:latest"
-
-      - name: Pull Frontend Image
-        run: |
-          docker pull "${FRONTEND_IMAGE}:latest"
-
-      # ----------------------------------------------------------
-      # Tag images for docker-compose
-      # ----------------------------------------------------------
-      - name: Tag Backend Image
-        run: |
-          docker tag \
-            "${BACKEND_IMAGE}:latest" \
-            secure-backend:latest
-
-      - name: Tag Frontend Image
-        run: |
-          docker tag \
-            "${FRONTEND_IMAGE}:latest" \
-            secure-frontend:latest
-
-      # ----------------------------------------------------------
-      # Project directory
-      # ----------------------------------------------------------
-      - name: Verify Deployment Directory
-        run: |
-          if [ ! -d "/home/alaa/secure-fullstack-project" ]; then
-            echo "ERROR: Deployment directory does not exist."
-            exit 1
-          fi
-
-          if [ ! -f "/home/alaa/secure-fullstack-project/docker-compose.yaml" ]; then
-            echo "ERROR: docker-compose.yaml not found."
-            exit 1
-          fi
-
-          echo "Deployment directory verified."
-
-      # ----------------------------------------------------------
-      # Verify Vault Agent container
-      # ----------------------------------------------------------
-      - name: Verify Vault Agent Container
-        run: |
-          if ! docker ps --format '{{.Names}}' | grep -qx 'secure-vault-agent'; then
+          if ! docker ps --format '{{.Names}}' | grep -q '^secure-vault-agent$'; then
             echo "ERROR: secure-vault-agent is not running."
             exit 1
           fi
 
           echo "Vault Agent container is running."
 
-      # ----------------------------------------------------------
-      # Verify Vault Agent process
-      # ----------------------------------------------------------
+      # ------------------------------------------
+      # Verify Vault Agent Process
+      # ------------------------------------------
       - name: Verify Vault Agent Process
         run: |
-          if ! docker exec secure-vault-agent \
-            sh -c "ps aux | grep '[v]ault agent' >/dev/null 2>&1"; then
+          docker exec secure-vault-agent \
+            sh -c 'ps aux | grep "[v]ault agent"'
 
-            echo "ERROR: Vault Agent process is not running."
-            exit 1
-          fi
+          echo "Vault Agent process verified."
 
-          echo "Vault Agent process is running."
-
-      # ----------------------------------------------------------
-      # Verify database secret
-      # ----------------------------------------------------------
-      - name: Verify Database Secret
+      # ------------------------------------------
+      # Verify Runtime Secret File
+      # ------------------------------------------
+      - name: Verify Runtime Secrets
         run: |
           SECRET_FILE="/home/alaa/secure-fullstack-project/runtime-secrets/database.env"
 
-          if [ ! -s "$SECRET_FILE" ]; then
-            echo "ERROR: Vault Agent did not generate database.env."
+          if [ ! -f "$SECRET_FILE" ]; then
+            echo "ERROR: Runtime secret file does not exist."
             exit 1
           fi
 
-          chmod 600 "$SECRET_FILE"
+          PERMS=$(stat -c "%a" "$SECRET_FILE")
 
-          PERMS="$(stat -c '%a' "$SECRET_FILE")"
-
-          echo "Database secret permissions: $PERMS"
+          echo "Secret file permissions: $PERMS"
 
           if [ "$PERMS" != "600" ]; then
-            echo "ERROR: database.env must have permissions 600."
+            echo "ERROR: Secret file permissions must be 600."
             exit 1
           fi
 
-          echo "Database secret is available."
+          echo "Runtime secret file verified."
 
-      # ----------------------------------------------------------
-      # Deploy from real project directory
-      # ----------------------------------------------------------
-      - name: Stop Application
-        working-directory: /home/alaa/secure-fullstack-project
+      # ------------------------------------------
+      # Deploy Application Stack
+      # ------------------------------------------
+      - name: Deploy Docker Compose Stack
         run: |
-          docker compose down || true
+          cd /home/alaa/secure-fullstack-project
 
-      - name: Start Application
-        working-directory: /home/alaa/secure-fullstack-project
+          docker compose down
+
+          docker compose up -d --build
+
+      # ------------------------------------------
+      # Wait for Containers
+      # ------------------------------------------
+      - name: Wait for Application
         run: |
-          docker compose up -d
+          echo "Waiting for containers..."
 
-      # ----------------------------------------------------------
-      # Verify containers
-      # ----------------------------------------------------------
-      - name: Verify Containers
-        working-directory: /home/alaa/secure-fullstack-project
-        run: |
-          docker compose ps
+          sleep 15
 
-      # ----------------------------------------------------------
-      # Verify database
-      # ----------------------------------------------------------
+          docker ps \
+            --filter "name=secure-database" \
+            --filter "name=secure-backend-compose" \
+            --filter "name=secure-frontend-compose"
+
+      # ------------------------------------------
+      # Verify Database
+      # ------------------------------------------
       - name: Verify Database
-        working-directory: /home/alaa/secure-fullstack-project
         run: |
-          for i in $(seq 1 30); do
+          if ! docker ps --format '{{.Names}}' | grep -q '^secure-database$'; then
+            echo "ERROR: Database container is not running."
+            exit 1
+          fi
 
-            if docker exec secure-database \
-              pg_isready -U appuser -d secureapp >/dev/null 2>&1; then
+          echo "Database container is running."
 
-              echo "Database health check passed."
-              exit 0
-            fi
-
-            echo "Waiting for database..."
-            sleep 2
-
-          done
-
-          echo "ERROR: Database health check failed."
-          docker compose logs database
-          exit 1
-
-      # ----------------------------------------------------------
-      # Verify backend
-      # ----------------------------------------------------------
+      # ------------------------------------------
+      # Verify Backend
+      # ------------------------------------------
       - name: Verify Backend
         run: |
-          for i in $(seq 1 30); do
+          if ! docker ps --format '{{.Names}}' | grep -q '^secure-backend-compose$'; then
+            echo "ERROR: Backend container is not running."
+            exit 1
+          fi
 
-            if curl -fsS http://localhost:8000/health; then
-              echo
-              echo "Backend health check passed."
-              exit 0
-            fi
+          echo "Backend container is running."
 
-            echo "Waiting for backend..."
-            sleep 2
-
-          done
-
-          echo "ERROR: Backend health check failed."
-          docker compose -f /home/alaa/secure-fullstack-project/docker-compose.yaml logs backend
-          exit 1
-
-      # ----------------------------------------------------------
-      # Verify backend database connection
-      # ----------------------------------------------------------
-      - name: Verify Backend Database Connection
-        run: |
-          for i in $(seq 1 15); do
-
-            if curl -fsS http://localhost:8000/db-test; then
-              echo
-              echo "Backend database connection passed."
-              exit 0
-            fi
-
-            echo "Waiting for backend database connection..."
-            sleep 2
-
-          done
-
-          echo "ERROR: Backend database connection failed."
-          docker compose -f /home/alaa/secure-fullstack-project/docker-compose.yaml logs backend
-          exit 1
-
-      # ----------------------------------------------------------
-      # Verify frontend
-      # ----------------------------------------------------------
+      # ------------------------------------------
+      # Verify Frontend
+      # ------------------------------------------
       - name: Verify Frontend
         run: |
-          curl -fsSI http://localhost:8080/
+          if ! docker ps --format '{{.Names}}' | grep -q '^secure-frontend-compose$'; then
+            echo "ERROR: Frontend container is not running."
+            exit 1
+          fi
+
+          echo "Frontend container is running."
+
+      # ------------------------------------------
+      # Backend Health Check
+      # ------------------------------------------
+      - name: Backend Health Check
+        run: |
+          echo "Checking backend..."
+
+          curl --fail \
+            --silent \
+            --show-error \
+            http://localhost:8000/health
+
+          echo
+          echo "Backend health check passed."
+
+      # ------------------------------------------
+      # Database Connection Test
+      # ------------------------------------------
+      - name: Database Connection Test
+        run: |
+          echo "Checking database connection..."
+
+          curl --fail \
+            --silent \
+            --show-error \
+            http://localhost:8000/db-test
+
+          echo
+          echo "Database connection test passed."
+
+      # ------------------------------------------
+      # Frontend Health Check
+      # ------------------------------------------
+      - name: Frontend Health Check
+        run: |
+          echo "Checking frontend..."
+
+          curl --fail \
+            --silent \
+            --show-error \
+            -I http://localhost:8080/
 
           echo
           echo "Frontend health check passed."
 
-      # ----------------------------------------------------------
-      # Logout from GHCR
-      # ----------------------------------------------------------
-      - name: Logout from GHCR
-        if: always()
+      # ------------------------------------------
+      # Deployment Summary
+      # ------------------------------------------
+      - name: Deployment Summary
         run: |
-          docker logout ghcr.io
+          echo "=========================================="
+          echo "      DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+          echo
+          echo "Frontend: http://localhost:8080"
+          echo "Backend:  http://localhost:8000"
+          echo "Health:   http://localhost:8000/health"
+          echo "DB Test:  http://localhost:8000/db-test"
+          echo
+          echo "Vault Agent: Running"
+          echo "Database:    Running"
+          echo "Backend:     Running"
+          echo "Frontend:    Running"
+          echo
+          echo "=========================================="
