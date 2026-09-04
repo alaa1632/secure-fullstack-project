@@ -202,6 +202,23 @@ jobs:
             secure-frontend:latest
 
       # ----------------------------------------------------------
+      # Project directory
+      # ----------------------------------------------------------
+      - name: Verify Deployment Directory
+        run: |
+          if [ ! -d "/home/alaa/secure-fullstack-project" ]; then
+            echo "ERROR: Deployment directory does not exist."
+            exit 1
+          fi
+
+          if [ ! -f "/home/alaa/secure-fullstack-project/docker-compose.yaml" ]; then
+            echo "ERROR: docker-compose.yaml not found."
+            exit 1
+          fi
+
+          echo "Deployment directory verified."
+
+      # ----------------------------------------------------------
       # Verify Vault Agent container
       # ----------------------------------------------------------
       - name: Verify Vault Agent Container
@@ -220,6 +237,7 @@ jobs:
         run: |
           if ! docker exec secure-vault-agent \
             sh -c "ps aux | grep '[v]ault agent' >/dev/null 2>&1"; then
+
             echo "ERROR: Vault Agent process is not running."
             exit 1
           fi
@@ -231,14 +249,16 @@ jobs:
       # ----------------------------------------------------------
       - name: Verify Database Secret
         run: |
-          if [ ! -s runtime-secrets/database.env ]; then
-            echo "ERROR: runtime-secrets/database.env does not exist."
+          SECRET_FILE="/home/alaa/secure-fullstack-project/runtime-secrets/database.env"
+
+          if [ ! -s "$SECRET_FILE" ]; then
+            echo "ERROR: Vault Agent did not generate database.env."
             exit 1
           fi
 
-          chmod 600 runtime-secrets/database.env
+          chmod 600 "$SECRET_FILE"
 
-          PERMS="$(stat -c '%a' runtime-secrets/database.env)"
+          PERMS="$(stat -c '%a' "$SECRET_FILE")"
 
           echo "Database secret permissions: $PERMS"
 
@@ -250,16 +270,15 @@ jobs:
           echo "Database secret is available."
 
       # ----------------------------------------------------------
-      # Stop application
+      # Deploy from real project directory
       # ----------------------------------------------------------
       - name: Stop Application
+        working-directory: /home/alaa/secure-fullstack-project
         run: |
           docker compose down || true
 
-      # ----------------------------------------------------------
-      # Start application
-      # ----------------------------------------------------------
       - name: Start Application
+        working-directory: /home/alaa/secure-fullstack-project
         run: |
           docker compose up -d
 
@@ -267,6 +286,7 @@ jobs:
       # Verify containers
       # ----------------------------------------------------------
       - name: Verify Containers
+        working-directory: /home/alaa/secure-fullstack-project
         run: |
           docker compose ps
 
@@ -274,6 +294,7 @@ jobs:
       # Verify database
       # ----------------------------------------------------------
       - name: Verify Database
+        working-directory: /home/alaa/secure-fullstack-project
         run: |
           for i in $(seq 1 30); do
 
@@ -312,7 +333,7 @@ jobs:
           done
 
           echo "ERROR: Backend health check failed."
-          docker compose logs backend
+          docker compose -f /home/alaa/secure-fullstack-project/docker-compose.yaml logs backend
           exit 1
 
       # ----------------------------------------------------------
@@ -334,7 +355,7 @@ jobs:
           done
 
           echo "ERROR: Backend database connection failed."
-          docker compose logs backend
+          docker compose -f /home/alaa/secure-fullstack-project/docker-compose.yaml logs backend
           exit 1
 
       # ----------------------------------------------------------
