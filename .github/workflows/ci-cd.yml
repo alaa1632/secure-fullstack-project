@@ -119,10 +119,10 @@ jobs:
 
       - name: Login to GHCR
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "$GHCR_TOKEN" | docker login ghcr.io \
-            -u "${{ github.repository_owner }}" \
+          printf '%s' "$CR_PAT" | docker login ghcr.io \
+            -u "${{ github.actor }}" \
             --password-stdin
 
       - name: Build Backend Image
@@ -169,22 +169,19 @@ jobs:
       # ----------------------------------------------------------
       - name: Login to GHCR
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "$GHCR_TOKEN" | docker login ghcr.io \
-            -u "${{ github.repository_owner }}" \
+          printf '%s' "$CR_PAT" | docker login ghcr.io \
+            -u "${{ github.actor }}" \
             --password-stdin
 
       # ----------------------------------------------------------
-      # Pull latest backend image
+      # Pull latest images
       # ----------------------------------------------------------
       - name: Pull Backend Image
         run: |
           docker pull "${BACKEND_IMAGE}:latest"
 
-      # ----------------------------------------------------------
-      # Pull latest frontend image
-      # ----------------------------------------------------------
       - name: Pull Frontend Image
         run: |
           docker pull "${FRONTEND_IMAGE}:latest"
@@ -205,7 +202,7 @@ jobs:
             secure-frontend:latest
 
       # ----------------------------------------------------------
-      # Verify Vault container
+      # Verify Vault Agent container
       # ----------------------------------------------------------
       - name: Verify Vault Agent Container
         run: |
@@ -252,14 +249,12 @@ jobs:
 
           echo "Database secret is available."
 
-
       # ----------------------------------------------------------
       # Stop application
       # ----------------------------------------------------------
       - name: Stop Application
         run: |
           docker compose down || true
-
 
       # ----------------------------------------------------------
       # Start application
@@ -268,14 +263,12 @@ jobs:
         run: |
           docker compose up -d
 
-
       # ----------------------------------------------------------
-      # Show container status
+      # Verify containers
       # ----------------------------------------------------------
       - name: Verify Containers
         run: |
           docker compose ps
-
 
       # ----------------------------------------------------------
       # Verify database
@@ -300,7 +293,6 @@ jobs:
           docker compose logs database
           exit 1
 
-
       # ----------------------------------------------------------
       # Verify backend
       # ----------------------------------------------------------
@@ -322,7 +314,6 @@ jobs:
           echo "ERROR: Backend health check failed."
           docker compose logs backend
           exit 1
-
 
       # ----------------------------------------------------------
       # Verify backend database connection
@@ -346,7 +337,6 @@ jobs:
           docker compose logs backend
           exit 1
 
-
       # ----------------------------------------------------------
       # Verify frontend
       # ----------------------------------------------------------
@@ -356,7 +346,6 @@ jobs:
 
           echo
           echo "Frontend health check passed."
-
 
       # ----------------------------------------------------------
       # Logout from GHCR
