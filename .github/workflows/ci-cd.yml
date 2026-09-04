@@ -10,12 +10,21 @@ permissions:
   packages: write
   security-events: write
 
+env:
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/secure-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/secure-frontend
+
 jobs:
+
+  # ============================================================
+  # 1. SECURITY
+  # ============================================================
   security:
     name: Security Scans
     runs-on: self-hosted
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -28,6 +37,7 @@ jobs:
 
       - name: Create Security Virtual Environment
         run: |
+          rm -rf /tmp/security-venv
           python3 -m venv /tmp/security-venv
           /tmp/security-venv/bin/python -m pip install --upgrade pip
 
@@ -44,28 +54,315 @@ jobs:
         run: |
           /tmp/security-venv/bin/pip-audit -r requirements.txt
 
+
+  # ============================================================
+  # 2. BUILD + TRIVY
+  # ============================================================
   build:
-    name: Build Docker Images
+    name: Build and Scan Docker Images
     needs: security
     runs-on: self-hosted
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Build Backend Image
         run: |
           docker build \
-            -t secure-backend \
+            -t "${BACKEND_IMAGE}:latest" \
             ./backend
 
       - name: Build Frontend Image
         run: |
           docker build \
-            -t secure-frontend \
+            -t "${FRONTEND_IMAGE}:latest" \
             ./frontend
+
+      - name: Trivy Backend Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:latest
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Trivy Frontend Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:latest
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
 
       - name: Verify Docker Images
         run: |
-          docker image inspect secure-backend
-          docker image inspect secure-frontend
+          docker image inspect "${BACKEND_IMAGE}:latest"
+          docker image inspect "${FRONTEND_IMAGE}:latest"
+
+
+  # ============================================================
+  # 3. PUBLISH TO GHCR
+  # ============================================================
+  publish:
+    name: Publish Images to GHCR
+    needs: build
+    runs-on: self-hosted
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io \
+            -u "${{ github.repository_owner }}" \
+            --password-stdin
+
+      - name: Build Backend Image
+        run: |
+          docker build \
+            -t "${BACKEND_IMAGE}:latest" \
+            ./backend
+
+      - name: Build Frontend Image
+        run: |
+          docker build \
+            -t "${FRONTEND_IMAGE}:latest" \
+            ./frontend
+
+      - name: Push Backend Image
+        run: |
+          docker push "${BACKEND_IMAGE}:latest"
+
+      - name: Push Frontend Image
+        run: |
+          docker push "${FRONTEND_IMAGE}:latest"
+
+      - name: Logout from GHCR
+        if: always()
+        run: |
+          docker logout ghcr.io
+
+
+  # ============================================================
+  # 4. DEPLOY
+  # ============================================================
+  deploy:
+    name: Deploy Application
+    needs: publish
+    runs-on: self-hosted
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # Login to GHCR
+      # ----------------------------------------------------------
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io \
+            -u "${{ github.repository_owner }}" \
+            --password-stdin
+
+      # ----------------------------------------------------------
+      # Pull latest backend image
+      # ----------------------------------------------------------
+      - name: Pull Backend Image
+        run: |
+          docker pull "${BACKEND_IMAGE}:latest"
+
+      # ----------------------------------------------------------
+      # Pull latest frontend image
+      # ----------------------------------------------------------
+      - name: Pull Frontend Image
+        run: |
+          docker pull "${FRONTEND_IMAGE}:latest"
+
+      # ----------------------------------------------------------
+      # Tag images for docker-compose
+      # ----------------------------------------------------------
+      - name: Tag Backend Image
+        run: |
+          docker tag \
+            "${BACKEND_IMAGE}:latest" \
+            secure-backend:latest
+
+      - name: Tag Frontend Image
+        run: |
+          docker tag \
+            "${FRONTEND_IMAGE}:latest" \
+            secure-frontend:latest
+
+      # ----------------------------------------------------------
+      # Verify Vault container
+      # ----------------------------------------------------------
+      - name: Verify Vault Agent Container
+        run: |
+          if ! docker ps --format '{{.Names}}' | grep -qx 'secure-vault-agent'; then
+            echo "ERROR: secure-vault-agent is not running."
+            exit 1
+          fi
+
+          echo "Vault Agent container is running."
+
+      # ----------------------------------------------------------
+      # Verify Vault Agent process
+      # ----------------------------------------------------------
+      - name: Verify Vault Agent Process
+        run: |
+          if ! docker exec secure-vault-agent \
+            sh -c "ps aux | grep '[v]ault agent' >/dev/null 2>&1"; then
+            echo "ERROR: Vault Agent process is not running."
+            exit 1
+          fi
+
+          echo "Vault Agent process is running."
+
+      # ----------------------------------------------------------
+      # Verify database secret
+      # ----------------------------------------------------------
+      - name: Verify Database Secret
+        run: |
+          if [ ! -s runtime-secrets/database.env ]; then
+            echo "ERROR: runtime-secrets/database.env does not exist."
+            exit 1
+          fi
+
+          chmod 600 runtime-secrets/database.env
+
+          PERMS="$(stat -c '%a' runtime-secrets/database.env)"
+
+          echo "Database secret permissions: $PERMS"
+
+          if [ "$PERMS" != "600" ]; then
+            echo "ERROR: database.env must have permissions 600."
+            exit 1
+          fi
+
+          echo "Database secret is available."
+
+
+      # ----------------------------------------------------------
+      # Stop application
+      # ----------------------------------------------------------
+      - name: Stop Application
+        run: |
+          docker compose down || true
+
+
+      # ----------------------------------------------------------
+      # Start application
+      # ----------------------------------------------------------
+      - name: Start Application
+        run: |
+          docker compose up -d
+
+
+      # ----------------------------------------------------------
+      # Show container status
+      # ----------------------------------------------------------
+      - name: Verify Containers
+        run: |
+          docker compose ps
+
+
+      # ----------------------------------------------------------
+      # Verify database
+      # ----------------------------------------------------------
+      - name: Verify Database
+        run: |
+          for i in $(seq 1 30); do
+
+            if docker exec secure-database \
+              pg_isready -U appuser -d secureapp >/dev/null 2>&1; then
+
+              echo "Database health check passed."
+              exit 0
+            fi
+
+            echo "Waiting for database..."
+            sleep 2
+
+          done
+
+          echo "ERROR: Database health check failed."
+          docker compose logs database
+          exit 1
+
+
+      # ----------------------------------------------------------
+      # Verify backend
+      # ----------------------------------------------------------
+      - name: Verify Backend
+        run: |
+          for i in $(seq 1 30); do
+
+            if curl -fsS http://localhost:8000/health; then
+              echo
+              echo "Backend health check passed."
+              exit 0
+            fi
+
+            echo "Waiting for backend..."
+            sleep 2
+
+          done
+
+          echo "ERROR: Backend health check failed."
+          docker compose logs backend
+          exit 1
+
+
+      # ----------------------------------------------------------
+      # Verify backend database connection
+      # ----------------------------------------------------------
+      - name: Verify Backend Database Connection
+        run: |
+          for i in $(seq 1 15); do
+
+            if curl -fsS http://localhost:8000/db-test; then
+              echo
+              echo "Backend database connection passed."
+              exit 0
+            fi
+
+            echo "Waiting for backend database connection..."
+            sleep 2
+
+          done
+
+          echo "ERROR: Backend database connection failed."
+          docker compose logs backend
+          exit 1
+
+
+      # ----------------------------------------------------------
+      # Verify frontend
+      # ----------------------------------------------------------
+      - name: Verify Frontend
+        run: |
+          curl -fsSI http://localhost:8080/
+
+          echo
+          echo "Frontend health check passed."
+
+
+      # ----------------------------------------------------------
+      # Logout from GHCR
+      # ----------------------------------------------------------
+      - name: Logout from GHCR
+        if: always()
+        run: |
+          docker logout ghcr.io
+EOF
