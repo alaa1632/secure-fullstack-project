@@ -1,0 +1,16 @@
+from fastapi import FastAPI
+
+app = FastAPI(title="Secure Full-Stack Application")
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "Secure Full-Stack Application",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}

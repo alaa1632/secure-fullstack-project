@@ -1,0 +1,30 @@
+# Secrets
+runtime-secrets/
+.env
+.env.*
+*.secret
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Vault runtime / sensitive data
+vault/data/
+vault/agent-token
+vault/credentials.txt
